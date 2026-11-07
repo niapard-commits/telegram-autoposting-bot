@@ -65,7 +65,7 @@ GitHub Actions (cron) ──► python -m lutserii <task>
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt numpy
+pip install -r requirements-dev.txt numpy pillow
 pytest -q
 ```
 
