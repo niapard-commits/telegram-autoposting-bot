@@ -1,0 +1,42 @@
+name: threads-auth
+
+# Одноразово: обмінює короткий токен Threads на довгий і зберігає його (data/threads/token.json).
+# Потрібні секрети: THREADS_APP_SECRET, THREADS_SHORT_TOKEN (див. docs/threads.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: threads
+  cancel-in-progress: false
+
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Exchange token
+        env:
+          THREADS_APP_SECRET: ${{ secrets.THREADS_APP_SECRET }}
+          THREADS_SHORT_TOKEN: ${{ secrets.THREADS_SHORT_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PREVIEW_CHAT_ID: ${{ secrets.PREVIEW_CHAT_ID }}
+        run: python scripts/threads_auth.py
+
+      - name: Save token
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/threads/token.json
+          git commit -m "chore: threads token [skip ci]" || exit 0
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

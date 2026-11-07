@@ -1,0 +1,72 @@
+name: threads
+
+# Щоденні пости в Threads: аніме (09:30 за Києвом), ігри (15:30), серіали (19:30).
+# Гачки (з ротацією варіантів) чергуються з постами зі свіжих новин каналу.
+# Без підключення Threads (data/threads/token.json) тексти лише надсилаються вам у приват як перегляд.
+on:
+  schedule:
+    - cron: "30 7 * * *"   # аніме
+    - cron: "30 13 * * *"  # ігри
+    - cron: "30 17 * * *"  # серіали
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Яка тема"
+        type: choice
+        default: games
+        options: [games, anime, series, all]
+      kind:
+        description: "Який пост"
+        type: choice
+        default: auto
+        options: [auto, hook, data, all]
+      preview:
+        description: "Лише надіслати текст у приват, нічого не публікувати"
+        type: boolean
+        default: true
+      live:
+        description: "Справжня публікація навіть до дати старту (02.11.2026); працює лише разом із вимкненим preview"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: threads
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt numpy pillow
+
+      - name: Post to Threads
+        env:
+          TOPIC: ${{ inputs.topic || (github.event.schedule == '30 7 * * *' && 'anime' || github.event.schedule == '30 13 * * *' && 'games' || 'series') }}
+          KIND: ${{ inputs.kind || 'auto' }}
+          THREADS_LIVE_FROM: ${{ inputs.live && '2000-01-01' || '' }}
+          PREVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.preview && '--preview' || '' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PREVIEW_CHAT_ID: ${{ secrets.PREVIEW_CHAT_ID }}
+        run: |
+          if [ "$TOPIC" = "all" ]; then topics="anime series games"; else topics="$TOPIC"; fi
+          for t in $topics; do python scripts/threads_post.py "$t" --kind "$KIND" $PREVIEW; done
+
+      - name: Save state
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/threads
+          git commit -m "chore: threads state [skip ci]" || exit 0
+          git checkout -- .
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

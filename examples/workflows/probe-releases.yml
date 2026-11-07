@@ -1,0 +1,45 @@
+name: probe-releases
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - name: Probe
+        run: |
+          mkdir -p data/probe/releases
+          python - <<'PY' > data/probe/releases/report.txt 2>&1
+          import json, requests
+          H = {"User-Agent": "Mozilla/5.0 (compatible; lutserii-probe)"}
+          S = "https://store.steampowered.com"
+          urls = {
+            "wiki_list_2026": "https://en.wikipedia.org/w/api.php?action=parse&page=List_of_video_games_released_in_2026&prop=wikitext&format=json&formatversion=2",
+            "wiki_list_2027": "https://en.wikipedia.org/w/api.php?action=parse&page=List_of_video_games_scheduled_for_release_in_2027&prop=wikitext&format=json&formatversion=2",
+            "steam_appdetails": "https://store.steampowered.com/api/appdetails?appids=4115450&cc=ua&l=ukrainian",
+            "steam_storesearch": "https://store.steampowered.com/api/storesearch/?term=Phantom%20Blade%20Zero&cc=ua&l=ukrainian",
+          }
+          for name, u in urls.items():
+              try:
+                  r = requests.get(u, headers=H, timeout=30)
+                  print(name, r.status_code, len(r.content), r.headers.get("content-type"))
+                  ext = "json" if "json" in (r.headers.get("content-type") or "") else "html"
+                  open(f"data/probe/releases/{name}.{ext}", "wb").write(r.content[:600000])
+              except Exception as e:
+                  print(name, "ERR", type(e).__name__, e)
+          PY
+          cat data/probe/releases/report.txt
+      - name: Save
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/probe/releases
+          git commit -m "chore: probe releases [skip ci]" || exit 0
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

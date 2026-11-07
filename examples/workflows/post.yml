@@ -1,0 +1,100 @@
+name: post
+
+on:
+  schedule:
+    # Блоки за часом доби (UTC; Київ узимку +2, влітку +3): ранок = аніме, середина дня = ігри, вечір = серіали.
+    # Добірка озвучки виходить чотири рази на день: 06:00, 10:30, 16:00, 19:30. Повторні проходи (09:00, 19:00)
+    # допублікують те, що відклали через ліміт ШІ. Час запусків не збігається: черга тримає лише один очікуючий запуск.
+    - cron: "0 6 * * *"    # ранок: аніме + озвучка
+    - cron: "0 9 * * *"    # аніме (повторно)
+    - cron: "30 10 * * *"  # лише озвучка
+    - cron: "0 11,13,15 * * *"  # середина дня: ігри (знижки, безкоштовне, консолі, релізи), тричі
+    - cron: "0 16 * * *"   # вечір: серіали + озвучка + підсумки тижня
+    - cron: "0 19 * * *"   # серіали (повторно)
+    - cron: "30 19 * * *"  # пізня добірка озвучки (21:30 за Києвом): серії, що вийшли після вечірньої
+    # Генерація описів наперед: одразу після добового скидання квоти Gemini (північ за Тихоокеанським часом)
+    - cron: "15 8 * * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Що запустити"
+        type: choice
+        default: all
+        options: [all, morning, games, evening, deals, free, anime, dubs, series, consoles, releases, weekly, test, probe, channels, pregen, compare, sites, setup, avatar]
+      dry_run:
+        description: "Лише показати пости в логах, нічого не слати"
+        type: boolean
+        default: false
+      quiet:
+        description: "Нічого не надсилати (ні в канал, ні вам у приват), лише діагностика у файлах"
+        type: boolean
+        default: false
+      date:
+        description: "Релізи, лише для перегляду (dry_run): дата РРРР-ММ-ДД, щоб побачити пости того дня"
+        type: string
+        default: ""
+      force:
+        description: "Аніме: опублікувати добірку ще раз, навіть якщо за сьогодні вона вже була"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: post
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          FORCE: ${{ inputs.force && '1' || '0' }}
+          RELEASES_DATE: ${{ inputs.date }}
+          QUIET: ${{ inputs.quiet && '1' || '0' }}
+          TASK: ${{ inputs.task || fromJSON('{"0 6 * * *":"morning","0 9 * * *":"anime","30 10 * * *":"dubs","30 19 * * *":"dubs","0 11,13,15 * * *":"games","0 16 * * *":"evening","0 19 * * *":"series","15 8 * * *":"pregen"}')[github.event.schedule] || 'all' }}
+          # Необов'язково: без ключа пости виходять без ШІ-описів
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          TEXT_PROVIDER: ${{ vars.TEXT_PROVIDER }}
+          AI_MODEL: ${{ vars.AI_MODEL }}
+          COMPARE_MODEL: ${{ vars.COMPARE_MODEL }}
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          ITAD_API_KEY: ${{ secrets.ITAD_API_KEY }}
+          # Ваш Telegram-ID: перегляд (dry_run) і приклади постів приходять вам у приват, не в канал
+          PREVIEW_CHAT_ID: ${{ secrets.PREVIEW_CHAT_ID }}
+        run: |
+          set +e
+          python -m lutserii "$TASK" 2>&1 | tee run.log
+          status=${PIPESTATUS[0]}
+          # Те саме показуємо на першому екрані запуску (вкладка «Короткий зміст»)
+          { echo '### Результат запуску'; echo '```'; cat run.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Save state
+        if: always()
+        run: |
+          git config user.name "lut-i-serii-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add -A data
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update state [skip ci]"
+            git pull --rebase
+            git push
+          fi

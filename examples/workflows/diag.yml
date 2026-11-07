@@ -1,0 +1,91 @@
+name: diag
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Diag
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+        run: |
+          mkdir -p data/probe
+          python - <<'PY' > data/probe/diag.txt 2>&1
+          import collections, requests
+          from lutserii.config import Config
+          from lutserii.db import StateDB
+          from lutserii import main as m
+          from lutserii.sources import cheapshark, gamerpower
+          cfg = Config.from_env(dry_run=True)
+          db = StateDB("data/state.db")
+          s = requests.Session(); s.headers["User-Agent"] = m.USER_AGENT
+          r0 = s.get("https://www.cheapshark.com/api/1.0/stores", timeout=20); print("stores status", r0.status_code, r0.text[:200])
+          stores = cheapshark.fetch_stores(s)
+          deals = cheapshark.fetch_deals_wide(s, m.trusted_store_ids(stores, cfg))
+          print("deals fetched", len(deals))
+          trusted = m.filter_trusted(deals, stores, cfg)
+          print("trusted", len(trusted), "stores:", collections.Counter(stores.get(d.store_id, "?") for d in deals).most_common(8))
+          pos = [d for d in trusted if d.sale_price > 0]
+          print("sale>0", len(pos))
+          disc = [d for d in pos if d.savings >= cfg.min_discount]
+          print("savings>=%s" % cfg.min_discount, len(disc))
+          rated = [d for d in disc if d.rating >= cfg.min_deal_rating]
+          print("rating>=%s" % cfg.min_deal_rating, len(rated))
+          print("rating distribution of discounted:", sorted((round(d.rating, 1) for d in disc), reverse=True)[:25])
+          picked = m.pick_deals(trusted, cfg, db)
+          print("after repeat filter", len(picked))
+          for d in picked[:10]:
+              print("  ", d.title, d.savings, d.rating, stores.get(d.store_id))
+          print("-- top rated discounted blocked by repeat:")
+          for d in sorted(rated, key=lambda d: -d.rating)[:15]:
+              print("  ", d.title, round(d.savings), d.rating, "deal-posted" if db.was_posted(f"deal:{d.deal_id}", cfg.deal_repeat_days) else "")
+          print("limits: per_run", cfg.max_deals_per_run, "per_day", cfg.max_deals_per_day, "min_discount", cfg.min_discount, "min_rating", cfg.min_deal_rating, "repeat_days", cfg.deal_repeat_days)
+          print("-- releases")
+          try:
+              from datetime import date, timedelta
+              from lutserii.sources import releases as R
+              items = R.fetch(s, 2026)
+              pop = R.steam_popular(s)
+              print("wiki items", len(items), "steam popular", len(pop))
+              for k in range(-5, 3):
+                  d = date.today() + timedelta(days=k)
+                  print(d, [(r.title, r.platforms, db.was_posted(f"rel:{r.key}")) for r in R.today_releases(items, d, pop)])
+          except Exception as e:
+              print("releases err", type(e).__name__, e)
+          print("-- tmdb airing today")
+          try:
+              import os
+              from lutserii.sources import tmdb
+              its = tmdb.fetch_airing_today(s, os.environ["TMDB_API_KEY"], pages=4)
+              print("airing items", len(its))
+              for i in sorted(its, key=lambda i: -float(i.get("popularity") or 0))[:25]:
+                  print("  ", i.get("name"), i.get("original_language"), round(float(i.get("popularity") or 0), 1), "cand" if tmdb.is_candidate(i, 60) else "")
+          except Exception as e:
+              print("tmdb err", type(e).__name__, e)
+          print("-- giveaways")
+          try:
+              g = gamerpower.fetch_giveaways(s)
+              print("giveaways fetched", len(g))
+              for x in g[:30]:
+                  print("  ", x.title, "| posted" if db.was_posted(f"free:{x.id}") else "| NEW")
+          except Exception as e:
+              print("giveaway err", type(e).__name__, e)
+          PY
+          cat data/probe/diag.txt; true
+      - name: Save
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/probe/diag.txt
+          git commit -m "chore: diag [skip ci]" || exit 0
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done

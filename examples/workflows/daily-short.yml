@@ -1,0 +1,103 @@
+name: daily-short
+
+# Щоденні Shorts із постів, які бот опублікував у каналі: аніме 08:30, ігри-знижки 15:30, безкоштовні ігри 17:30, серіали 19:30 (за Києвом).
+# Після публікації на YouTube кожен ролик з готовим підписом надсилається власнику в приват для TikTok.
+# Без секретів YT_* ролик лише збирається; з ними завантажується на YouTube (приватність: змінна YT_PRIVACY, за замовчуванням private).
+on:
+  schedule:
+    - cron: "30 6 * * *"   # аніме, 08:30 за Києвом
+    - cron: "30 13 * * *"  # ігри (знижки й релізи), 15:30
+    - cron: "30 15 * * *"  # безкоштовні ігри (роздачі), 17:30
+    - cron: "30 17 * * *"  # серіали, 19:30 (після вечірнього запуску озвучки)
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "Яка тема"
+        type: choice
+        default: games
+        options: [all, games, free, anime, series]
+      preview:
+        description: "Лише надіслати ролики вам у приват (без YouTube, пости не позначаються показаними)"
+        type: boolean
+        default: true
+      redo:
+        description: "Перезібрати сьогоднішні ролики (пости, показані сьогодні, беруться знову; разом із preview=false це справжня публікація)"
+        type: boolean
+        default: false
+      test_upload:
+        description: "Тест: завантажити на YouTube ПРИВАТНИМ (потрібно вимкнути «preview»); без TikTok, пости не позначаються показаними"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-short
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # Пауза розкладу: поки в репозиторії є файл data/shorts/PAUSED, запуски за розкладом нічого не збирають і не публікують.
+    # Ручні запуски (перегляд) працюють завжди. Щоб відновити публікацію, файл просто видаляють.
+    runs-on: ubuntu-latest
+    outputs:
+      paused: ${{ steps.check.outputs.paused }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - id: check
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ -f data/shorts/PAUSED ]; then echo "paused=true" >> "$GITHUB_OUTPUT"; echo "Розклад Shorts на паузі (data/shorts/PAUSED)."; else echo "paused=false" >> "$GITHUB_OUTPUT"; fi
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.paused != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        timeout-minutes: 12
+        run: |
+          # apt на раннері інколи зависає на десятки хвилин — кожен виклик має ліміт часу й повтори, ffmpeg зазвичай уже є
+          for i in 1 2 3; do command -v ffmpeg >/dev/null && break; timeout 120 sudo apt-get update -qq || true; timeout 180 sudo apt-get install -y -qq ffmpeg && break; done
+          pip install -r requirements.txt pillow numpy playwright
+          for i in 1 2 3; do timeout 240 playwright install --with-deps chromium && break; echo "повтор $i"; done
+          command -v ffmpeg >/dev/null && python -c "from playwright.sync_api import sync_playwright as s; p=s().start(); p.chromium.launch().close(); p.stop()"
+
+      - name: Build and upload short
+        env:
+          PREVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.preview && '--preview' || '' }} ${{ github.event_name == 'workflow_dispatch' && inputs.test_upload && '--test' || '' }} ${{ github.event_name == 'workflow_dispatch' && inputs.redo && '--redo' || '' }}
+          TOPIC: ${{ inputs.topic || (github.event.schedule == '30 6 * * *' && 'anime' || github.event.schedule == '30 13 * * *' && 'games' || github.event.schedule == '30 15 * * *' && 'free' || 'series') }}
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_PRIVACY: ${{ vars.YT_PRIVACY }}
+          YT_PUBLIC_FROM: ${{ vars.YT_PUBLIC_FROM }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          PREVIEW_CHAT_ID: ${{ secrets.PREVIEW_CHAT_ID }}
+        run: python scripts/daily_short.py "$TOPIC" --out out/short.mp4 $PREVIEW
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: short
+          path: out/*.mp4
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Save shown list
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          [ -f data/shorts/shown.json ] || exit 0   # файлу ще немає, якщо нічого не завантажували
+          git add data/shorts/shown.json
+          git commit -m "chore: shorts shown [skip ci]" || exit 0
+          git checkout -- .
+          for i in 1 2 3; do git pull --rebase && git push && break; sleep 5; done
