@@ -11,6 +11,7 @@ writes the posts, adds cover images and publishes them. Extra workflows produce
 YouTube Shorts and Threads posts from the same data.
 
 <p align="center"><img src="docs/demo.gif" width="800" alt="Left: new posts appear in the channel. Right: the GitHub Actions run that published them"></p>
+<p align="center"><a href="docs/demo.mp4"><b>▶ Watch the 60-second demo video</b></a></p>
 
 > This is a portfolio copy of a private production repository. It has no
 > keys, tokens, database or third-party music, and the scheduled workflows are
