@@ -95,4 +95,4 @@ To render Shorts, download the free [Inter](https://rsms.me/inter/) font into
 
 ---
 
-**Need a channel or social account that posts by itself?** Order or ask a question via [my Fiverr gig](https://www.fiverr.com/serhii_bots/build-a-custom-python-telegram-bot).
+
